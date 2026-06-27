@@ -14,6 +14,31 @@ This setup uses:
 
 The key insight: Node.js on Termux reports `process.platform === 'android'`, which breaks the standard `npm install -g @anthropic-ai/claude-code`. The workaround installs the linux-arm64 package directly.
 
+## Public vs Local Agent Files
+
+This repository is intended to stay public and sanitized. The tracked `CLAUDE.md` is reference material for the Android/proot setup and should not contain secrets, auth material, personal project notes, or private operational details.
+
+For local agent instructions, keep a private `AGENTS.md` symlink in the repo root:
+
+```bash
+cd /root/claude-code-android
+ln -sf /root/CLAUDE.md AGENTS.md
+printf '\nAGENTS.md\n' >> .git/info/exclude
+```
+
+`AGENTS.md` should resolve to a private file outside the repository, commonly a vault-backed note such as `/root/CLAUDE.md`. If that private file uses load-on-demand notes for infrequent workflows, keep those notes outside Git and describe only the generic pattern in public docs.
+
+Before publishing changes, verify the public file set:
+
+```bash
+git ls-files
+# Expected:
+# CLAUDE.md
+# README.md
+# parse_chatgpt.py
+# parse_claude.py
+```
+
 ## Prerequisites
 
 - **Android device** (aarch64 / arm64 architecture)
@@ -139,8 +164,8 @@ For each plugin, create a folder and download `main.js`, `manifest.json`, and `s
 
 ```bash
 PLUGIN_ID="omnisearch"
-mkdir -p ~/.obsidian/plugins/$PLUGIN_ID
-cd ~/.obsidian/plugins/$PLUGIN_ID
+mkdir -p ~/ObsidianVault/.obsidian/plugins/$PLUGIN_ID
+cd ~/ObsidianVault/.obsidian/plugins/$PLUGIN_ID
 
 # Example: Omnisearch v1.28.2
 curl -sL https://github.com/scambier/obsidian-omnisearch/releases/download/1.28.2/main.js -o main.js
@@ -275,7 +300,7 @@ which npm && npm --version
 
 # If Obsidian vault is set up
 ls -la ~/ObsidianVault
-cat ~/.obsidian/community-plugins.json
+cat ~/ObsidianVault/.obsidian/community-plugins.json
 ```
 
 ## References
@@ -300,7 +325,7 @@ cat ~/.obsidian/community-plugins.json
 
 **Plugins not loading:**
 - Verify plugin IDs in `.obsidian/community-plugins.json` match `id` fields in `manifest.json`
-- Check files exist: `ls -la ~/.obsidian/plugins/{plugin-id}/`
+- Check files exist: `ls -la ~/ObsidianVault/.obsidian/plugins/{plugin-id}/`
 - Restart Obsidian after adding plugins
 
 **Permission denied on /sdcard:**
@@ -322,4 +347,4 @@ Improvements, clarifications, and bug fixes are welcome. Please test on a real A
 **Environment:** Ubuntu 25.10 (proot-distro), Termux on Android (aarch64)  
 **Claude Code version:** 2.1.114  
 **Node.js:** v25.8.2 (via Termux)  
-**Verified capabilities:** Obsidian vault sync, PyMOL 3.1.0 ray-traced renders, SSH bridge for /sdcard writes, Remote Control access
+**Verified capabilities:** Claude Code CLI from proot, Obsidian vault access, SSH bridge for `/sdcard` writes, chat export parsing scripts

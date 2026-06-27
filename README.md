@@ -234,7 +234,169 @@ ssh -p 8022 localhost 'cp -rf /sdcard/source/. "/sdcard/ObsidianVault/destinatio
 
 - Claude Code can write render outputs, exports, and generated files directly to the Obsidian vault
 - No manual copy-paste between Termux and proot windows
-- Verified working: PyMOL ray-traced renders (1920×1440 PNG) copied to vault on aarch64 Android
+- Verified working: generated files copied from proot-controlled workflows into the Android vault
+
+## Gateway-Assisted Access
+
+A separate always-on gateway computer is optional, but it makes this setup much more useful. The phone can initiate an outbound reverse SSH tunnel to the gateway, which lets you work on the phone's Termux/proot environment from a normal desktop shell even when the phone is on mobile data or behind carrier NAT.
+
+The pattern is:
+
+1. Termux runs `sshd` locally on the phone.
+2. The phone starts an outbound SSH connection to the gateway with remote port forwarding enabled.
+3. The gateway exposes a localhost-only port that forwards back to the phone's Termux `sshd`.
+4. From the gateway, you SSH through that forwarded port and enter proot Ubuntu.
+
+This avoids opening an inbound port on the phone. Authentication should use SSH keys, and the forwarded port should bind to the gateway's loopback interface unless you have a separate, deliberate access-control layer.
+
+In this setup, direct gateway-to-phone SSH over the local Wi-Fi network is not treated as reliable. The phone may appear on the same LAN but refuse inbound Termux SSH connections, likely because of phone/OEM network security behavior around inbound connections on Wi-Fi. The supported maintenance path is the phone-initiated reverse tunnel, which also works when the phone is on cellular data.
+
+### Remote Maintenance Capabilities
+
+With the tunnel up, the gateway can act as the maintenance workstation for the Android environment. This is authenticated SSH command execution, not an unauthenticated remote execution service.
+
+Common maintenance tasks include:
+
+- Inspecting and editing files in the phone's proot filesystem.
+- Running repo checks, parser tests, `git status`, `git diff`, and other development commands inside proot.
+- Entering a full interactive Termux or proot shell from a desktop keyboard.
+- Triggering Termux-side file operations through the proot-to-Termux SSH bridge when a workflow needs Android shared-storage writes.
+- Creating Git bundles on the phone and pushing from the gateway when the phone environment does not have GitHub HTTPS auth configured.
+- Restarting phone-side user services such as Termux `sshd` or the reverse tunnel script.
+
+This division is useful because the phone remains the source environment, while the gateway provides stable desktop access, GitHub auth, larger screen workflows, and automation glue.
+
+### Phone-Side Tunnel
+
+Install and start OpenSSH in Termux:
+
+```bash
+pkg install openssh
+sshd
+```
+
+Create a small reconnecting tunnel script in Termux. Replace the gateway user, host, SSH port, remote bind port, and key path with your own values:
+
+```bash
+cat > ~/tunnel-to-gateway.sh <<'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+set -u
+
+GATEWAY_USER="your-gateway-user"
+GATEWAY_HOST="your-gateway-host"
+GATEWAY_SSH_PORT="22"
+REMOTE_PORT="9022"
+PHONE_SSH_PORT="8022"
+KEY="$HOME/.ssh/id_ed25519"
+
+while true; do
+  ssh -N \
+    -i "$KEY" \
+    -p "$GATEWAY_SSH_PORT" \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    -o ExitOnForwardFailure=yes \
+    -R "127.0.0.1:${REMOTE_PORT}:127.0.0.1:${PHONE_SSH_PORT}" \
+    "${GATEWAY_USER}@${GATEWAY_HOST}"
+  sleep 10
+done
+EOF
+
+chmod 700 ~/tunnel-to-gateway.sh
+```
+
+Start it manually:
+
+```bash
+nohup ~/tunnel-to-gateway.sh >> ~/tunnel.log 2>&1 &
+```
+
+For persistence after phone reboot, Termux:Boot can run a small startup script that starts `sshd` and then launches the tunnel script.
+
+### Gateway-Side Access
+
+From the gateway, connect through the forwarded localhost port:
+
+```bash
+ssh -p 9022 your-termux-user@localhost
+```
+
+To enter proot Ubuntu directly:
+
+```bash
+ssh -p 9022 your-termux-user@localhost 'proot-distro login ubuntu'
+```
+
+For non-interactive automation from the gateway:
+
+```bash
+ssh -p 9022 your-termux-user@localhost 'proot-distro login ubuntu -- bash -lc "cd /root/claude-code-android && git status --short --branch"'
+```
+
+This is the same basic access pattern used for editing the repo from a gateway machine: the gateway talks to the phone over the reverse tunnel, and the phone runs the actual commands inside proot.
+
+If the phone and gateway are on the same trusted Wi-Fi network, direct LAN SSH to the phone may work on some devices:
+
+```bash
+ssh -p 8022 your-termux-user@phone-lan-ip
+```
+
+For this documented setup, use the reverse tunnel as the primary path. Do not rely on direct Wi-Fi SSH unless you have verified that the phone's Termux `sshd` is reachable from another LAN host.
+
+### Operational Notes
+
+- Keep the reverse tunnel phone-initiated; it works across NAT and mobile networks.
+- Bind the forwarded gateway port to `127.0.0.1` unless you intentionally expose it elsewhere.
+- Do not router-port-forward Termux `sshd` directly to the internet. Use the reverse tunnel to a controlled gateway instead.
+- Prefer key-based auth. Do not commit hostnames, usernames, key paths, passwords, tokens, or private runbooks to this public repository.
+- Keep private gateway aliases and local agent notes in files outside Git, such as a private `AGENTS.md` symlink target.
+- If the gateway port stops responding, check that Termux `sshd` is running and inspect the phone-side tunnel log.
+
+### Tunnel Health Checks
+
+A forwarded port can be TCP-open but still unusable if the old forwarding session is stale or the phone-side `sshd` is not responding. Check for a real SSH banner or a successful command, not just an open port.
+
+From the gateway:
+
+```bash
+# TCP listener check only; this is not enough by itself
+nc -vz 127.0.0.1 9022
+
+# Better: confirm the SSH server presents a banner/key
+ssh-keyscan -T 5 -p 9022 127.0.0.1
+
+# Best: confirm authenticated command execution
+ssh -4 -o BatchMode=yes -o ConnectTimeout=10 -p 9022 your-termux-user@127.0.0.1 'echo reverse-ok'
+```
+
+Healthy output includes an SSH host key from `ssh-keyscan` or `reverse-ok` from the authenticated command. If `nc` says the port is open but SSH times out during banner exchange, the gateway-side listener is probably stale or the tunnel is no longer reaching Termux `sshd`.
+
+On the phone, restart Termux `sshd` and the tunnel:
+
+```bash
+pkill sshd
+sshd -p 8022
+pkill -f tunnel-to-gateway.sh
+pkill -f 'ssh .*9022'
+nohup ~/tunnel-to-gateway.sh >> ~/tunnel.log 2>&1 &
+tail -20 ~/tunnel.log
+```
+
+On the gateway, inspect the forwarded listener:
+
+```bash
+ss -tnlp '( sport = :9022 )'
+lsof -nP -iTCP:9022
+```
+
+If a stale `sshd` session is holding the forwarded port and new phone tunnels cannot bind it, terminate only that stale forwarding session, then let the phone reconnect. After it reconnects, run the authenticated `echo reverse-ok` check again.
+
+If the local host key changes after reconnecting or rebuilding the phone environment, remove the old localhost entry and accept the new key deliberately:
+
+```bash
+ssh-keygen -R '[127.0.0.1]:9022'
+ssh -o StrictHostKeyChecking=accept-new -p 9022 your-termux-user@127.0.0.1 'echo reverse-ok'
+```
 
 ## Known Issues & Gotchas
 
